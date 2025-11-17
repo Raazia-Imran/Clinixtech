@@ -208,8 +208,10 @@ class Appointment(db.Model):
     doctor_id = db.Column(db.Integer, db.ForeignKey('doctor.id'), nullable=False)
     appointment_date = db.Column(db.Date, nullable=False)
     time_slot = db.Column(db.String(10), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default='scheduled')  # scheduled, completed, cancelled
     symptoms = db.Column(db.Text)
+    completed_at = db.Column(db.DateTime, nullable=True)
     priority = db.Column(db.String(20), default='normal')  # emergency, urgent, normal
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1231,34 +1233,109 @@ def init_sample_data():
 #                             appointments=sorted_appointments)
 
 
-# ============================================
+# # ============================================
+# # COMPLETE APPOINTMENT
+# # ============================================
+# @app.route('/appointment/complete/<int:appointment_id>', methods=['POST'])
+# def complete_appointment(appointment_id):
+#     """
+#     Mark an appointment as completed
+#     """
+#     doctor_id = session['doctor_id']
+    
+#     try:
+#         appointment = Appointment.query.get_or_404(appointment_id)
+        
+#         # Verify this appointment belongs to the logged-in doctor
+#         if appointment.doctor_id != doctor_id:
+#             flash('Unauthorized access to this appointment', 'error')
+#             return redirect(url_for('doctor_appointments'))
+        
+#         appointment.status = 'completed'
+#         # appointment.completed_at = datetime.now()
+#         db.session.commit()
+        
+#         flash('Appointment marked as completed!', 'success')
+        
+#     except Exception as e:
+#         db.session.rollback()
+#         flash(f'Error completing appointment: {str(e)}', 'error')
+    
+#     return redirect(url_for('doctor_appointments'))
+
+@app.route('/doctor/appointments')
+def doctor_appointments():
+    if 'doctor' not in session:
+        flash("Please login first", "danger")
+        return redirect(url_for('login_doctor'))
+
+    doctor = Doctor.query.filter_by(name=session['doctor']).first()
+    if not doctor:
+        flash("Doctor not found", "danger")
+        return redirect(url_for('login_doctor'))
+
+    # Fetch pending/scheduled appointments for this doctor
+    appointments = Appointment.query.filter(
+        Appointment.doctor_id == doctor.id,
+        Appointment.status.in_(['pending', 'scheduled'])
+    ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
+
+    # Build priority queue
+    priority_queue = []
+    for appointment in appointments:
+        patient = Patient.query.get(appointment.patient_id)
+        priority_value = PRIORITY_VALUES.get(appointment.priority, 3)
+
+        appointment_data = {
+            'id': appointment.id,
+            'patient_id': appointment.patient_id,
+            'patient_name': patient.name if patient else 'Unknown',
+            'date': appointment.appointment_date.strftime('%Y-%m-%d'),
+            'time': appointment.time_slot,
+            'priority': appointment.priority,
+            'reason': appointment.reason,
+            'status': appointment.status,
+            'sort_key': (priority_value, appointment.appointment_date, appointment.time_slot)
+        }
+
+        heapq.heappush(priority_queue, (
+            priority_value,
+            (appointment.appointment_date, appointment.time_slot),
+            appointment_data
+        ))
+
+    # Pop sorted appointments from the heap
+    sorted_appointments = []
+    while priority_queue:
+        _, _, appointment_data = heapq.heappop(priority_queue)
+        sorted_appointments.append(appointment_data)
+
+    return render_template('doctor_appointments.html', appointments=sorted_appointments)
+
+# =====================
 # COMPLETE APPOINTMENT
-# ============================================
+# =====================
 @app.route('/appointment/complete/<int:appointment_id>', methods=['POST'])
 def complete_appointment(appointment_id):
-    """
-    Mark an appointment as completed
-    """
-    doctor_id = session['doctor_id']
-    
-    try:
-        appointment = Appointment.query.get_or_404(appointment_id)
-        
-        # Verify this appointment belongs to the logged-in doctor
-        if appointment.doctor_id != doctor_id:
-            flash('Unauthorized access to this appointment', 'error')
-            return redirect(url_for('doctor_appointments'))
-        
-        appointment.status = 'completed'
-        # appointment.completed_at = datetime.now()
-        db.session.commit()
-        
-        flash('Appointment marked as completed!', 'success')
-        
-    except Exception as e:
-        db.session.rollback()
-        flash(f'Error completing appointment: {str(e)}', 'error')
-    
+    if 'doctor' not in session:
+        flash("Please login first", "danger")
+        return redirect(url_for('login_doctor'))
+
+    doctor = Doctor.query.filter_by(name=session['doctor']).first()
+    if not doctor:
+        flash("Doctor not found", "danger")
+        return redirect(url_for('login_doctor'))
+
+    appointment = Appointment.query.get_or_404(appointment_id)
+
+    if appointment.doctor_id != doctor.id:
+        flash("Unauthorized access to this appointment", "danger")
+        return redirect(url_for('doctor_appointments'))
+
+    appointment.status = 'completed'
+    db.session.commit()
+
+    flash("Appointment marked as completed!", "success")
     return redirect(url_for('doctor_appointments'))
 
 
@@ -1381,15 +1458,95 @@ def add_appointment_note(appointment_id):
     
     return redirect(url_for('patient_medical_history', patient_id=appointment.patient_id))
 #3, prescription
+# @app.route('/doctor/prescriptions', methods=['GET', 'POST'])
+# def doctor_prescriptions():
+#     if 'doctor' not in session:
+#         return redirect(url_for('login_doctor'))
+
+#     doctor = Doctor.query.filter_by(name=session['doctor']).first()
+
+#     if request.method == 'POST':
+#         # Use current date/time instead of form date since it's not in the form
+#         date_value = datetime.utcnow()
+
+#         new_prescription = Prescription(
+#             patient_id=request.form['patient_id'],
+#             doctor_id=doctor.id,
+#             date=date_value,
+#             medication=request.form['medication'],
+#             dosage=request.form['dosage'],
+#             frequency=request.form.get('frequency', 'As directed'),
+#             duration=request.form['duration'],
+#             instructions=request.form.get('instructions', ''),
+#             refills=request.form.get('refills', 0, type=int),
+#             active=True
+#         )
+
+#         db.session.add(new_prescription)
+#         db.session.commit()
+#         flash("Prescription added to stack!", "success")
+#         return redirect(url_for('doctor_prescriptions'))
+
+#     prescriptions_query = Prescription.query.filter_by(
+#         doctor_id=doctor.id
+#     ).order_by(Prescription.date.desc()).all()
+
+#     prescriptions = []
+#     for p in prescriptions_query:
+#         patient = Patient.query.get(p.patient_id)
+#         prescriptions.append({
+#             'id': p.id,
+#             'patient_name': patient.name if patient else 'Unknown',
+#             'medication': p.medication,
+#             'dosage': p.dosage,
+#             'frequency': p.frequency,
+#             'duration': p.duration,
+#             'instructions': p.instructions,
+#             'date': p.date.strftime('%Y-%m-%d %H:%M')
+#         })
+
+#     patients = Patient.query.all()
+
+#     return render_template(
+#         'doctor_prescriptions.html',
+#         prescriptions=prescriptions,
+#         patients=patients,
+#         doctor=doctor
+#     )
+
+
+# # ===== POP FROM STACK =====
+# @app.route('/doctor/prescriptions/delete/<int:prescription_id>', methods=['POST'])
+# def delete_prescription(prescription_id):
+#     if 'doctor' not in session:
+#         return redirect(url_for('login_doctor'))
+    
+#     # POP operation - Remove prescription
+#     prescription = Prescription.query.get(prescription_id)
+    
+#     if prescription:
+#         db.session.delete(prescription)
+#         db.session.commit()
+#         flash("Prescription removed from stack (POP operation)", "success")
+    
+#     return redirect(url_for('doctor_prescriptions'))
+
+# In-memory stack for prescriptions
+prescription_stack =[]
 @app.route('/doctor/prescriptions', methods=['GET', 'POST'])
 def doctor_prescriptions():
     if 'doctor' not in session:
         return redirect(url_for('login_doctor'))
 
     doctor = Doctor.query.filter_by(name=session['doctor']).first()
+    patients = Patient.query.all()  # <-- MUST load patients
 
     if request.method == 'POST':
-        # Use current date/time instead of form date since it's not in the form
+        # Validate patient_id exists in the form
+        if 'patient_id' not in request.form or request.form['patient_id'] == "":
+            flash("Please select a patient before adding a prescription.", "danger")
+            return redirect(url_for('doctor_prescriptions'))
+
         date_value = datetime.utcnow()
 
         new_prescription = Prescription(
@@ -1398,18 +1555,34 @@ def doctor_prescriptions():
             date=date_value,
             medication=request.form['medication'],
             dosage=request.form['dosage'],
-            frequency=request.form.get('frequency', 'As directed'),
+            frequency="As directed",
             duration=request.form['duration'],
-            instructions=request.form.get('instructions', ''),
-            refills=request.form.get('refills', 0, type=int),
+            instructions=request.form['instructions'],
+            refills=0,
             active=True
         )
 
         db.session.add(new_prescription)
         db.session.commit()
-        flash("Prescription added to stack!", "success")
+
+        # Push to stack
+       
+        prescription_stack.append({
+            'id': new_prescription.id,
+            'patient_id': new_prescription.patient_id,
+            'doctor_id': new_prescription.doctor_id,
+            'medication': new_prescription.medication,
+            'dosage': new_prescription.dosage,
+            'frequency': new_prescription.frequency,
+            'duration': new_prescription.duration,
+            'instructions': new_prescription.instructions,
+            'date': new_prescription.date.strftime('%Y-%m-%d %H:%M')
+        })
+
+        flash("Prescription added successfully!", "success")
         return redirect(url_for('doctor_prescriptions'))
 
+    # GET MODE — Load prescriptions
     prescriptions_query = Prescription.query.filter_by(
         doctor_id=doctor.id
     ).order_by(Prescription.date.desc()).all()
@@ -1428,198 +1601,205 @@ def doctor_prescriptions():
             'date': p.date.strftime('%Y-%m-%d %H:%M')
         })
 
-    patients = Patient.query.all()
-
     return render_template(
         'doctor_prescriptions.html',
         prescriptions=prescriptions,
-        patients=patients,
-        doctor=doctor
+        patients=patients,          # <-- REQUIRED
+        doctor=doctor,
+        stack=prescription_stack
     )
 
 
-# ===== POP FROM STACK =====
 @app.route('/doctor/prescriptions/delete/<int:prescription_id>', methods=['POST'])
 def delete_prescription(prescription_id):
     if 'doctor' not in session:
         return redirect(url_for('login_doctor'))
-    
-    # POP operation - Remove prescription
+
+    # 1️⃣ POP from STACK (LIFO behavior)
+    for i in range(len(prescription_stack) - 1, -1, -1):
+        if prescription_stack[i]['id'] == prescription_id:
+            prescription_stack.pop(i)
+            break
+
+    # 2️⃣ Delete from DATABASE
     prescription = Prescription.query.get(prescription_id)
-    
     if prescription:
         db.session.delete(prescription)
         db.session.commit()
-        flash("Prescription removed from stack (POP operation)", "success")
-    
+
+    flash("Prescription removed from stack (POP operation)", "success")
     return redirect(url_for('doctor_prescriptions'))
+    
+
+
+
 
 # 4. Book Appointment
 # ============================================
 # DOCTOR BOOKS APPOINTMENT
 # ============================================
-# @app.route('/docbook/appointment', methods=['GET', 'POST'])
-# def docbook_appointment():
-#     # Check if doctor is logged in
-#     if 'doctor' not in session:
-#         flash("Please login first", "danger")
-#         return redirect(url_for('login_doctor'))
+@app.route('/docbook/appointment', methods=['GET', 'POST'])
+def docbook_appointment():
+    # Check if doctor is logged in
+    if 'doctor' not in session:
+        flash("Please login first", "danger")
+        return redirect(url_for('login_doctor'))
    
-#     # 1. Get current doctor using the secure ID from session
-#     doctor = Doctor.query.filter_by(name=session['doctor']).first()
-#     patients = Patient.query.all()
+    # 1. Get current doctor using the secure ID from session
+    doctor = Doctor.query.filter_by(name=session['doctor']).first()
+    patients = Patient.query.all()
     
-#     # --- POST Request: Handle Form Submission ---
-#     if request.method == 'POST':
-#         try:
-#             # Basic Input Validation
-#             appointment_date_str = request.form['appointment_date']
-#             time_slot = request.form['time_slot']
-#             patient_id = request.form['patient_id']
-#             priority = request.form.get('priority', 'normal')
-#             reason = request.form['reason']
+    # --- POST Request: Handle Form Submission ---
+    if request.method == 'POST':
+        try:
+            # Basic Input Validation
+            appointment_date_str = request.form['appointment_date']
+            time_slot = request.form['time_slot']
+            patient_id = request.form['patient_id']
+            priority = request.form.get('priority', 'normal')
+            reason = request.form['reason']
             
-#             # Convert date string to date object
-#             appointment_date = datetime.strptime(appointment_date_str, '%Y-%m-%d').date()
+            # Convert date string to date object
+            appointment_date = datetime.strptime(appointment_date_str, '%Y-%m-%d').date()
 
-#             # Security: Check if patient exists
-#             if not Patient.query.get(patient_id):
-#                 flash("🚫 Invalid patient selected.", "error")
-#                 return redirect(url_for('docbook_appointment'))
+            # Security: Check if patient exists
+            if not Patient.query.get(patient_id):
+                flash("🚫 Invalid patient selected.", "error")
+                return redirect(url_for('docbook_appointment'))
 
-#             # Check for existing appointment at this slot (Prevent double booking)
-#             existing = Appointment.query.filter_by(
-#                 doctor_id=doctor.id,
-#                 appointment_date=appointment_date,
-#                 time_slot=time_slot
-#             ).filter(
-#                 Appointment.status.in_(['pending', 'scheduled']) # Only check pending/scheduled
-#             ).first()
+            # Check for existing appointment at this slot (Prevent double booking)
+            existing = Appointment.query.filter_by(
+                doctor_id=doctor.id,
+                appointment_date=appointment_date,
+                time_slot=time_slot
+            ).filter(
+                Appointment.status.in_(['pending', 'scheduled']) # Only check pending/scheduled
+            ).first()
 
-#             if existing:
-#                 flash("⚠️ This exact time slot is already booked for a pending appointment.", "warning")
-#                 return redirect(url_for('docbook_appointment'))
+            if existing:
+                flash("⚠️ This exact time slot is already booked for a pending appointment.", "warning")
+                return redirect(url_for('docbook_appointment'))
                 
-#             # 2. Create New Appointment (Inserted into Priority Queue implicitly via DB query)
-#             new_appointment = Appointment(
-#                 doctor_id=doctor.id,
-#                 patient_id=patient_id,
-#                 appointment_date=appointment_date,
-#                 time_slot=time_slot,
-#                 priority=priority,
-#                 reason=reason,
-#                 status='pending' # Set status to 'pending' to ensure it appears in the queue
-#             )
+            # 2. Create New Appointment (Inserted into Priority Queue implicitly via DB query)
+            new_appointment = Appointment(
+                doctor_id=doctor.id,
+                patient_id=patient_id,
+                appointment_date=appointment_date,
+                time_slot=time_slot,
+                priority=priority,
+                reason=reason,
+                status='pending' # Set status to 'pending' to ensure it appears in the queue
+            )
             
-#             db.session.add(new_appointment)
-#             db.session.commit()
+            db.session.add(new_appointment)
+            db.session.commit()
             
-#             flash("✅ Appointment successfully scheduled and added to the Doctor's Queue!", "success")
+            flash("✅ Appointment successfully scheduled and added to the Doctor's Queue!", "success")
             
-#             # Redirect to the Doctor Appointments page to show the new appointment in the prioritized list
-#             return redirect(url_for('doctor_appointments'))
+            # Redirect to the Doctor Appointments page to show the new appointment in the prioritized list
+            return redirect(url_for('doctor_appointments'))
             
-#         except ValueError:
-#             db.session.rollback()
-#             flash("❌ Invalid date format provided.", "error")
-#             return redirect(url_for('docbook_appointment'))
-#         except Exception as e:
-#             db.session.rollback()
-#             flash(f"❌ Error booking appointment: {str(e)}", "danger")
-#             return redirect(url_for('docbook_appointment'))
+        except ValueError:
+            db.session.rollback()
+            flash("❌ Invalid date format provided.", "error")
+            return redirect(url_for('docbook_appointment'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"❌ Error booking appointment: {str(e)}", "danger")
+            return redirect(url_for('docbook_appointment'))
             
-#     # --- GET Request: Render Form ---
-#     return render_template('docbook_appointment.html', 
-#                             doctor=doctor, 
-#                             patients=patients,
-#                             today=datetime.now().strftime('%Y-%m-%d'))
+    # --- GET Request: Render Form ---
+    return render_template('docbook_appointment.html', 
+                            doctor=doctor, 
+                            patients=patients,
+                            today=datetime.now().strftime('%Y-%m-%d'))
 
 
 # ============================================
 # DOCTOR APPOINTMENTS - View with Priority Queue
 # ============================================
-@app.route('/doctor/appointments', methods=['GET', 'POST'])
-def doctor_appointments():
-    # Check if doctor is logged in
-    if 'doctor' not in session:
-        flash("Please login first", "danger")
-        return redirect(url_for('login_doctor'))
+# @app.route('/doctor/appointments', methods=['GET', 'POST'])
+# def doctor_appointments():
+#     # Check if doctor is logged in
+#     if 'doctor' not in session:
+#         flash("Please login first", "danger")
+#         return redirect(url_for('login_doctor'))
     
-    # Use doctor_id from session
-    doctor = Doctor.query.filter_by(name=session['doctor']).first()
+#     # Use doctor_id from session
+#     doctor = Doctor.query.filter_by(name=session['doctor']).first()
     
-    # Handle POST request (if any form is submitting to this route)
-    if request.method == 'POST':
-        # This could be for completing appointments or other actions
-        appointment_id = request.form.get('appointment_id')
-        action = request.form.get('action')
+#     # Handle POST request (if any form is submitting to this route)
+#     if request.method == 'POST':
+#         # This could be for completing appointments or other actions
+#         appointment_id = request.form.get('appointment_id')
+#         action = request.form.get('action')
         
-        if action == 'complete' and appointment_id:
-            try:
-                appointment = Appointment.query.get_or_404(appointment_id)
+#         if action == 'complete' and appointment_id:
+#             try:
+#                 appointment = Appointment.query.get_or_404(appointment_id)
                 
-                # Verify this appointment belongs to the logged-in doctor
-                if appointment.doctor_id == doctor.id:
-                    appointment.status = 'completed'
-                    db.session.commit()
-                    flash('Appointment marked as completed!', 'success')
-                else:
-                    flash('Unauthorized access to this appointment', 'error')
+#                 # Verify this appointment belongs to the logged-in doctor
+#                 if appointment.doctor_id == doctor.id:
+#                     appointment.status = 'completed'
+#                     db.session.commit()
+#                     flash('Appointment marked as completed!', 'success')
+#                 else:
+#                     flash('Unauthorized access to this appointment', 'error')
                     
-            except Exception as e:
-                db.session.rollback()
-                flash(f'Error completing appointment: {str(e)}', 'error')
+#             except Exception as e:
+#                 db.session.rollback()
+#                 flash(f'Error completing appointment: {str(e)}', 'error')
         
-        return redirect(url_for('doctor_appointments'))
+#         return redirect(url_for('doctor_appointments'))
     
-    # GET request - Fetch all pending appointments for this doctor
-    appointments = Appointment.query.filter(
-        Appointment.doctor_id == doctor.id, 
-        Appointment.status.in_(['pending', 'scheduled'])
-    ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
+#     # GET request - Fetch all pending appointments for this doctor
+#     appointments = Appointment.query.filter(
+#         Appointment.doctor_id == doctor.id, 
+#         Appointment.status.in_(['pending', 'scheduled'])
+#     ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
     
-    # Implement Priority Queue using heapq
-    priority_queue = []
+#     # Implement Priority Queue using heapq
+#     priority_queue = []
     
-    for appointment in appointments:
-        patient = Patient.query.get(appointment.patient_id)
+#     for appointment in appointments:
+#         patient = Patient.query.get(appointment.patient_id)
         
-        # Determine priority value (Lower value = Higher Priority)
-        priority_value = PRIORITY_VALUES.get(appointment.priority, 3)
+#         # Determine priority value (Lower value = Higher Priority)
+#         priority_value = PRIORITY_VALUES.get(appointment.priority, 3)
         
-        appointment_data = {
-            'id': appointment.id,
-            'patient_id': appointment.patient_id,
-            'patient_name': patient.name if patient else 'Unknown',
-            'date': appointment.appointment_date.strftime('%Y-%m-%d'),
-            'time': appointment.time_slot,
-            'priority': appointment.priority,
-            'reason': appointment.reason or appointment.symptoms or 'No reason provided',
-            # Use a combination of priority_value and appointment time/date for tie-breaking
-            'sort_key': (priority_value, appointment.appointment_date, appointment.time_slot)
-        }
+#         appointment_data = {
+#             'id': appointment.id,
+#             'patient_id': appointment.patient_id,
+#             'patient_name': patient.name if patient else 'Unknown',
+#             'date': appointment.appointment_date.strftime('%Y-%m-%d'),
+#             'time': appointment.time_slot,
+#             'priority': appointment.priority,
+#             'reason': appointment.reason or appointment.symptoms or 'No reason provided',
+#             # Use a combination of priority_value and appointment time/date for tie-breaking
+#             'sort_key': (priority_value, appointment.appointment_date, appointment.time_slot)
+#         }
         
-        # Push to heap: (priority_value, date_time_tuple, data)
-        heapq.heappush(priority_queue, (
-            priority_value,
-            (appointment.appointment_date, appointment.time_slot), 
-            appointment_data
-        ))
+#         # Push to heap: (priority_value, date_time_tuple, data)
+#         heapq.heappush(priority_queue, (
+#             priority_value,
+#             (appointment.appointment_date, appointment.time_slot), 
+#             appointment_data
+#         ))
     
-    # Extract sorted appointments from priority queue
-    sorted_appointments = []
-    while priority_queue:
-        _, _, appointment_data = heapq.heappop(priority_queue)
-        sorted_appointments.append(appointment_data)
+#     # Extract sorted appointments from priority queue
+#     sorted_appointments = []
+#     while priority_queue:
+#         _, _, appointment_data = heapq.heappop(priority_queue)
+#         sorted_appointments.append(appointment_data)
 
-    return render_template('doctor_appointments.html', 
-                          appointments=sorted_appointments,
-                          doctor=doctor)
+#     return render_template('doctor_appointments.html', 
+#                           appointments=sorted_appointments,
+#                           doctor=doctor)
 
-# 5. Edit Profile
-# ============================================
-# DOCTOR EDIT PROFILE
-# ============================================
+# # 5. Edit Profile
+# # ============================================
+# # DOCTOR EDIT PROFILE
+# # ============================================
 @app.route('/doctor/editprofile', methods=['GET', 'POST'])
 def doctor_editprofile():
     # Check if doctor is logged in
@@ -1713,7 +1893,7 @@ def doctor_schedule():
             
             db.session.commit()
             flash('Availability saved successfully!', 'success')
-            return redirect(url_for('doctor_appointments'))
+            return redirect(url_for('dashboard_doctor'))
             
         except Exception as e:
             db.session.rollback()
