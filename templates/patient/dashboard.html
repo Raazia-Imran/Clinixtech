@@ -229,8 +229,9 @@
                                     {% for appt in upcoming_appointments %}
                                     <tr>
                                         <td>
-                                            <strong>{{ appt.date.strftime('%b %d, %Y') }}</strong><br>
-                                            <small class="text-muted">{{ appt.time }}</small>
+                                           
+                                        <strong>{{ appt.appointment_date.strftime('%b %d, %Y') }}</strong><br>
+                                        <small class="text-muted">{{ appt.time_slot }}</small>
                                         </td>
                                         <td>{{ appt.doctor.name }}</td>
                                         <td>{{ appt.doctor.specialization }}</td>

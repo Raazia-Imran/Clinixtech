@@ -504,6 +504,11 @@ def logout():
 
 # ==================== NEW PATIENT PORTAL ROUTES ====================
 
+# UPDATED PATIENT ROUTES WITH PROPER DATABASE INTEGRATION
+# Add these routes to your app.py, replacing the existing patient routes
+
+# ==================== PATIENT PORTAL ROUTES (FIXED) ====================
+
 @app.route('/patient/dashboard')
 @patient_login_required
 def patient_dashboard():
@@ -556,16 +561,30 @@ def book_appointment():
     if request.method == 'POST':
         try:
             doctor_id = request.form.get('doctor_id')
-            date = datetime.strptime(request.form.get('date'), '%Y-%m-%d').date()
+            date_str = request.form.get('date')
             time = request.form.get('time')
             symptoms = request.form.get('symptoms')
             priority = request.form.get('priority', 'normal')
             
-            # Check if slot is available
+            # Validate inputs
+            if not all([doctor_id, date_str, time, symptoms]):
+                flash('Please fill in all required fields.', 'error')
+                return redirect(url_for('book_appointment'))
+            
+            # Convert date string to date object
+            appointment_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            
+            # Check if doctor exists
+            doctor = Doctor.query.get(doctor_id)
+            if not doctor:
+                flash('Selected doctor not found.', 'error')
+                return redirect(url_for('book_appointment'))
+            
+            # Check if slot is already booked
             existing = Appointment.query.filter_by(
                 doctor_id=doctor_id,
-                date=date,
-                time=time,
+                appointment_date=appointment_date,
+                time_slot=time,
                 status='scheduled'
             ).first()
             
@@ -573,14 +592,16 @@ def book_appointment():
                 flash('This time slot is already booked. Please choose another time.', 'error')
                 return redirect(url_for('book_appointment'))
             
+            # Create new appointment
             appointment = Appointment(
                 patient_id=patient_id,
                 doctor_id=doctor_id,
-                date=date,
-                time=time,
+                appointment_date=appointment_date,
+                time_slot=time,
                 symptoms=symptoms,
                 priority=priority,
-                status='scheduled'
+                status='scheduled',
+                created_at=datetime.utcnow()
             )
             
             db.session.add(appointment)
@@ -589,14 +610,18 @@ def book_appointment():
             flash('Appointment booked successfully!', 'success')
             return redirect(url_for('view_appointments'))
             
+        except ValueError as e:
+            db.session.rollback()
+            flash(f'Invalid date format: {str(e)}', 'error')
         except Exception as e:
             db.session.rollback()
             flash(f'Error booking appointment: {str(e)}', 'error')
+            print(f"Appointment booking error: {str(e)}")  # Debug logging
     
-    # GET request
+    # GET request - show booking form
     doctors = Doctor.query.all()
     specializations = db.session.query(Doctor.specialization).distinct().all()
-    specializations = [s[0] for s in specializations]
+    specializations = [s[0] for s in specializations if s[0]]
     
     return render_template('patient/book-appointment.html',
                          doctors=doctors,
@@ -608,14 +633,16 @@ def book_appointment():
 def view_appointments():
     patient_id = session.get('patient_id')
     
+    # Get all appointments for this patient
     all_appointments = Appointment.query.filter_by(
         patient_id=patient_id
     ).order_by(Appointment.appointment_date.desc(), Appointment.time_slot.desc()).all()
     
     today = datetime.now().date()
     
-    upcoming = [a for a in all_appointments if a.date >= today and a.status == 'scheduled']
-    past = [a for a in all_appointments if a.date < today or a.status in ['completed', 'cancelled']]
+    # Separate upcoming and past appointments
+    upcoming = [a for a in all_appointments if a.appointment_date >= today and a.status == 'scheduled']
+    past = [a for a in all_appointments if a.appointment_date < today or a.status in ['completed', 'cancelled']]
     
     return render_template('patient/view-appointments.html',
                          upcoming_appointments=upcoming,
@@ -625,15 +652,26 @@ def view_appointments():
 @patient_login_required
 def cancel_appointment(appointment_id):
     patient_id = session.get('patient_id')
-    appointment = Appointment.query.filter_by(
-        id=appointment_id,
-        patient_id=patient_id
-    ).first_or_404()
     
-    appointment.status = 'cancelled'
-    db.session.commit()
+    try:
+        appointment = Appointment.query.filter_by(
+            id=appointment_id,
+            patient_id=patient_id
+        ).first_or_404()
+        
+        # Only allow cancellation of scheduled appointments
+        if appointment.status != 'scheduled':
+            flash('Only scheduled appointments can be cancelled.', 'error')
+            return redirect(url_for('view_appointments'))
+        
+        appointment.status = 'cancelled'
+        db.session.commit()
+        
+        flash('Appointment cancelled successfully.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error cancelling appointment: {str(e)}', 'error')
     
-    flash('Appointment cancelled successfully.', 'success')
     return redirect(url_for('view_appointments'))
 
 @app.route('/patient/medical-records')
@@ -641,11 +679,33 @@ def cancel_appointment(appointment_id):
 def medical_records():
     patient_id = session.get('patient_id')
     
+    # Get all medical records for this patient
     records = MedicalRecord.query.filter_by(
         patient_id=patient_id
     ).order_by(MedicalRecord.visit_date.desc()).all()
     
     return render_template('patient/medical-records.html', records=records)
+
+@app.route('/patient/prescriptions')
+@patient_login_required
+def prescriptions():
+    patient_id = session.get('patient_id')
+    
+    # Get active prescriptions
+    active = Prescription.query.filter_by(
+        patient_id=patient_id,
+        active=True
+    ).order_by(Prescription.date.desc()).all()
+    
+    # Get past prescriptions
+    past = Prescription.query.filter_by(
+        patient_id=patient_id,
+        active=False
+    ).order_by(Prescription.date.desc()).all()
+    
+    return render_template('patient/prescriptions.html',
+                         active_prescriptions=active,
+                         past_prescriptions=past)
 
 @app.route('/patient/vitals', methods=['GET', 'POST'])
 @patient_login_required
@@ -654,13 +714,17 @@ def patient_vitals():
     
     if request.method == 'POST':
         try:
+            # Get form data
             weight = float(request.form.get('weight')) if request.form.get('weight') else None
             height = float(request.form.get('height')) if request.form.get('height') else None
             
+            # Calculate BMI if both weight and height are provided
             bmi = calculate_bmi(weight, height) if weight and height else None
             
+            # Create new vitals record
             vitals = Vitals(
                 patient_id=patient_id,
+                date=datetime.utcnow(),
                 heart_rate=int(request.form.get('heart_rate')) if request.form.get('heart_rate') else None,
                 blood_pressure_systolic=int(request.form.get('bp_systolic')) if request.form.get('bp_systolic') else None,
                 blood_pressure_diastolic=int(request.form.get('bp_diastolic')) if request.form.get('bp_diastolic') else None,
@@ -688,32 +752,14 @@ def patient_vitals():
         except Exception as e:
             db.session.rollback()
             flash(f'Error recording vitals: {str(e)}', 'error')
+            print(f"Vitals recording error: {str(e)}")  # Debug logging
     
-    # GET request
+    # GET request - show vitals form and history
     all_vitals = Vitals.query.filter_by(
         patient_id=patient_id
     ).order_by(Vitals.date.desc()).all()
     
     return render_template('patient/vitals.html', vitals_list=all_vitals)
-
-@app.route('/patient/prescriptions')
-@patient_login_required
-def prescriptions():
-    patient_id = session.get('patient_id')
-    
-    active = Prescription.query.filter_by(
-        patient_id=patient_id,
-        active=True
-    ).order_by(Prescription.date.desc()).all()
-    
-    past = Prescription.query.filter_by(
-        patient_id=patient_id,
-        active=False
-    ).order_by(Prescription.date.desc()).all()
-    
-    return render_template('patient/prescriptions.html',
-                         active_prescriptions=active,
-                         past_prescriptions=past)
 
 @app.route('/patient/profile', methods=['GET', 'POST'])
 @patient_login_required
@@ -723,6 +769,7 @@ def patient_profile():
     
     if request.method == 'POST':
         try:
+            # Update basic information
             patient.name = request.form.get('name')
             patient.age = int(request.form.get('age'))
             patient.gender = request.form.get('gender')
@@ -731,17 +778,22 @@ def patient_profile():
             patient.blood_group = request.form.get('blood_group')
             patient.emergency_contact = request.form.get('emergency_contact')
             
-            # Handle profile picture
+            # Handle profile picture upload
             if 'profile_picture' in request.files:
                 file = request.files['profile_picture']
                 if file and file.filename:
                     filename = secure_filename(f"patient_{patient_id}_{file.filename}")
-                    file.save(os.path.join(PATIENT_UPLOAD_FOLDER, filename))
+                    filepath = os.path.join(PATIENT_UPLOAD_FOLDER, filename)
+                    file.save(filepath)
                     patient.profile_picture = filename
             
-            # Change password
+            # Change password if provided
             if request.form.get('new_password'):
                 patient.password = request.form.get('new_password')
+            
+            # Update session name if changed
+            if patient.name != session['patient']:
+                session['patient'] = patient.name
             
             db.session.commit()
             flash('Profile updated successfully!', 'success')
@@ -750,10 +802,14 @@ def patient_profile():
         except Exception as e:
             db.session.rollback()
             flash(f'Error updating profile: {str(e)}', 'error')
+            print(f"Profile update error: {str(e)}")  # Debug logging
     
     return render_template('patient/profile.html', patient=patient)
 
 # ==================== API ROUTES ====================
+
+# ==================== PATIENT API ROUTES ====================
+# Add these API routes to your app.py
 
 @app.route('/api/doctors/available')
 @patient_login_required
@@ -772,13 +828,16 @@ def available_doctors():
     for doctor in doctors:
         booked_slots = []
         if date_str:
-            date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            appointments = Appointment.query.filter_by(
-                doctor_id=doctor.id,
-                date=date,
-                status='scheduled'
-            ).all()
-            booked_slots = [a.time for a in appointments]
+            try:
+                date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                appointments = Appointment.query.filter_by(
+                    doctor_id=doctor.id,
+                    appointment_date=date,
+                    status='scheduled'
+                ).all()
+                booked_slots = [a.time_slot for a in appointments]  # Use time_slot here
+            except ValueError:
+                pass
         
         result.append({
             'id': doctor.id,
@@ -792,9 +851,36 @@ def available_doctors():
     
     return jsonify(result)
 
+def check_appointment_fields():
+    """Check what fields exist in the Appointment model"""
+    with app.app_context():
+        try:
+            # Try to access appointments
+            appointments = Appointment.query.limit(1).all()
+            if appointments:
+                apt = appointments[0]
+                print(f"✅ Appointment fields:")
+                print(f"   - appointment_date: {hasattr(apt, 'appointment_date')}")
+                print(f"   - time_slot: {hasattr(apt, 'time_slot')}")
+                print(f"   - date: {hasattr(apt, 'date')}")
+                print(f"   - time: {hasattr(apt, 'time')}")
+            else:
+                print("ℹ️ No appointments found in database")
+        except Exception as e:
+            print(f"❌ Error checking appointments: {e}")
+
+# # Call this in your main block
+# if __name__ == '__main__':
+#     with app.app_context():
+#         db.create_all()
+#         check_appointment_fields()
+#         init_sample_data()
+#     app.run(debug=True)
+
 @app.route('/api/patient/vitals')
 @patient_login_required
 def vitals_api():
+    """Get patient vitals data for charts"""
     patient_id = session.get('patient_id')
     days = request.args.get('days', 30, type=int)
     
@@ -830,12 +916,13 @@ def vitals_api():
 @app.route('/api/patient/appointments')
 @patient_login_required
 def appointments_api():
+    """Get patient appointments for priority queue display"""
     patient_id = session.get('patient_id')
     
     appointments = Appointment.query.filter_by(
         patient_id=patient_id,
         status='scheduled'
-    ).order_by(Appointment.date, Appointment.time).all()
+    ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
     
     data = []
     priority_order = {'emergency': 1, 'urgent': 2, 'normal': 3}
@@ -844,22 +931,24 @@ def appointments_api():
         data.append({
             'id': a.id,
             'doctor': a.doctor.name,
-            'date': a.date.strftime('%Y-%m-%d'),
-            'time': a.time,
+            'date': a.appointment_date.strftime('%Y-%m-%d'),
+            'time': a.time_slot,
             'priority': a.priority,
             'priority_value': priority_order.get(a.priority, 3),
             'symptoms': a.symptoms
         })
     
+    # Sort by date first, then by priority
     data.sort(key=lambda x: (x['date'], x['priority_value'], x['time']))
     
     return jsonify(data)
 
-# ==================== PDF GENERATION ====================
+# ==================== PDF GENERATION ROUTES ====================
 
 @app.route('/patient/download-medical-summary')
 @patient_login_required
 def download_medical_summary():
+    """Generate and download a PDF summary of medical records"""
     try:
         patient_id = session.get('patient_id')
         patient = Patient.query.get_or_404(patient_id)
@@ -882,6 +971,8 @@ def download_medical_summary():
         p.drawString(1*inch, y, f"Age: {patient.age} | Gender: {patient.gender}")
         y -= 0.2*inch
         p.drawString(1*inch, y, f"Blood Group: {patient.blood_group or 'N/A'}")
+        y -= 0.2*inch
+        p.drawString(1*inch, y, f"Contact: {patient.contact}")
         
         # Recent Records
         y -= 0.5*inch
@@ -891,11 +982,11 @@ def download_medical_summary():
         
         records = MedicalRecord.query.filter_by(patient_id=patient_id).order_by(
             MedicalRecord.visit_date.desc()
-        ).limit(5).all()
+        ).limit(10).all()
         
         y -= 0.3*inch
         for record in records:
-            if y < 2*inch:
+            if y < 2*inch:  # Start new page if running out of space
                 p.showPage()
                 y = height - 1*inch
             
@@ -903,7 +994,7 @@ def download_medical_summary():
             y -= 0.15*inch
             p.drawString(1*inch, y, f"Diagnosis: {record.diagnosis[:60]}")
             y -= 0.15*inch
-            p.drawString(1*inch, y, f"Doctor: {record.doctor.name}")
+            p.drawString(1*inch, y, f"Doctor: Dr. {record.doctor.name}")
             y -= 0.3*inch
         
         p.save()
@@ -918,6 +1009,7 @@ def download_medical_summary():
 @app.route('/patient/download-prescription/<int:prescription_id>')
 @patient_login_required
 def download_prescription(prescription_id):
+    """Generate and download a PDF prescription"""
     try:
         patient_id = session.get('patient_id')
         prescription = Prescription.query.filter_by(
@@ -967,7 +1059,9 @@ def download_prescription(prescription_id):
             p.drawString(1*inch, y, "Instructions:")
             p.setFont("Helvetica", 9)
             y -= 0.2*inch
-            p.drawString(1*inch, y, prescription.instructions[:100])
+            # Word wrap instructions
+            instructions = prescription.instructions[:200]
+            p.drawString(1*inch, y, instructions)
         
         p.save()
         buffer.seek(0)
@@ -1644,12 +1738,21 @@ def doctor_schedule():
 
 if __name__ == '__main__':
     with app.app_context():
+        # Create tables
         db.create_all()
+
+        # Initialize sample data
         init_sample_data()
-        
+
+        # Check appointment fields
+        check_appointment_fields()
+
+        # Inspect database
         inspector = db.inspect(db.engine)
         print("📊 Tables in DB:", inspector.get_table_names())
         print("🏥 Total Doctors:", Doctor.query.count())
         print("👥 Total Patients:", Patient.query.count())
-    
+
+    # Run Flask app (only once!)
     app.run(debug=True)
+

@@ -279,40 +279,45 @@
                 });
             }
 
-            function showTimeSlots(doctorId) {
-                const date = dateInput.value;
-                if (!date) return;
+// In the displayDoctors function, update the time slot handling
+function showTimeSlots(doctorId) {
+    const date = dateInput.value;
+    if (!date) return;
 
-                // In a real app, you'd fetch booked slots from the server
-                // For now, we'll simulate some random booked slots
-                const bookedSlots = ['09:00 AM', '11:30 AM', '02:30 PM']; // Example booked slots
+    // Fetch booked slots from server
+    fetch(`/api/doctors/available?specialization=${specializationSelect.value}&date=${date}`)
+        .then(response => response.json())
+        .then(doctors => {
+            const doctor = doctors.find(d => d.id == doctorId);
+            const bookedSlots = doctor ? doctor.booked_slots : [];
+            
+            const timeSlotsContainer = document.getElementById('timeSlots');
+            timeSlotsContainer.innerHTML = '';
 
-                const timeSlotsContainer = document.getElementById('timeSlots');
-                timeSlotsContainer.innerHTML = '';
+            timeSlots.forEach(slot => {
+                const isBooked = bookedSlots.includes(slot);
+                const timeSlot = `
+                    <input type="radio" class="btn-check" name="time" value="${slot}" id="time${slot.replace(/[^a-zA-Z0-9]/g, '')}" ${isBooked ? 'disabled' : ''}>
+                    <label class="btn ${isBooked ? 'btn-secondary' : 'btn-outline-success'} time-slot" for="time${slot.replace(/[^a-zA-Z0-9]/g, '')}">
+                        ${slot}
+                    </label>
+                `;
+                timeSlotsContainer.innerHTML += timeSlot;
+            });
 
-                timeSlots.forEach(slot => {
-                    const isBooked = bookedSlots.includes(slot);
-                    const timeSlot = `
-                        <input type="radio" class="btn-check" name="time" value="${slot}" id="time${slot.replace(/[^a-zA-Z0-9]/g, '')}" ${isBooked ? 'disabled' : ''}>
-                        <label class="btn ${isBooked ? 'btn-secondary' : 'btn-outline-success'} time-slot" for="time${slot.replace(/[^a-zA-Z0-9]/g, '')}">
-                            ${slot}
-                        </label>
-                    `;
-                    timeSlotsContainer.innerHTML += timeSlot;
+            timeSlotsSection.style.display = 'block';
+            detailsSection.style.display = 'none';
+            bookButton.disabled = true;
+
+            // Add event listeners to time slot selection
+            document.querySelectorAll('input[name="time"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    selectedTime = this.value;
+                    showAppointmentDetails();
                 });
-
-                timeSlotsSection.style.display = 'block';
-                detailsSection.style.display = 'none';
-                bookButton.disabled = true;
-
-                // Add event listeners to time slot selection
-                document.querySelectorAll('input[name="time"]').forEach(radio => {
-                    radio.addEventListener('change', function() {
-                        selectedTime = this.value;
-                        showAppointmentDetails();
-                    });
-                });
-            }
+            });
+        });
+}
 
             function showAppointmentDetails() {
                 detailsSection.style.display = 'block';
