@@ -1938,6 +1938,11 @@ if __name__ == '__main__':
         print("🏥 Total Doctors:", Doctor.query.count())
         print("👥 Total Patients:", Patient.query.count())
 
-    # Run Flask app (only once!)
-    app.run(debug=True)
+        
+    # UPDATED FOR RENDER DEPLOYMENT:
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)  # ← UPDATED
+
+    # # Run Flask app (only once!)
+    # app.run(debug=True)
 
