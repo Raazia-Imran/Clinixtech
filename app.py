@@ -2,6 +2,9 @@
 import os
 from datetime import datetime
 
+import os
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -210,7 +213,7 @@ class Appointment(db.Model):
     time_slot = db.Column(db.String(10), nullable=False)
     reason = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default='scheduled')  # scheduled, completed, cancelled
-    symptoms = db.Column(db.Text)
+    #symptoms = db.Column(db.Text)#
     completed_at = db.Column(db.DateTime, nullable=True)
     priority = db.Column(db.String(20), default='normal')  # emergency, urgent, normal
     notes = db.Column(db.Text)
@@ -565,11 +568,11 @@ def book_appointment():
             doctor_id = request.form.get('doctor_id')
             date_str = request.form.get('date')
             time = request.form.get('time')
-            symptoms = request.form.get('symptoms')
+            reason = request.form.get('reason')
             priority = request.form.get('priority', 'normal')
             
             # Validate inputs
-            if not all([doctor_id, date_str, time, symptoms]):
+            if not all([doctor_id, date_str, time, reason]):
                 flash('Please fill in all required fields.', 'error')
                 return redirect(url_for('book_appointment'))
             
@@ -600,7 +603,7 @@ def book_appointment():
                 doctor_id=doctor_id,
                 appointment_date=appointment_date,
                 time_slot=time,
-                symptoms=symptoms,
+                reason=reason,
                 priority=priority,
                 status='scheduled',
                 created_at=datetime.utcnow()
@@ -937,7 +940,7 @@ def appointments_api():
             'time': a.time_slot,
             'priority': a.priority,
             'priority_value': priority_order.get(a.priority, 3),
-            'symptoms': a.symptoms
+            'reason': a.reason
         })
     
     # Sort by date first, then by priority
@@ -1701,11 +1704,11 @@ def docbook_appointment():
             
         except ValueError:
             db.session.rollback()
-            flash("❌ Invalid date format provided.", "error")
+            flash("Invalid date format provided.", "error")
             return redirect(url_for('docbook_appointment'))
         except Exception as e:
             db.session.rollback()
-            flash(f"❌ Error booking appointment: {str(e)}", "danger")
+            flash(f"Error booking appointment: {str(e)}", "danger")
             return redirect(url_for('docbook_appointment'))
             
     # --- GET Request: Render Form ---
@@ -1850,8 +1853,10 @@ def doctor_editprofile():
 
 # 6. Schedule Management
 PRIORITY_VALUES = {
-    'critical': 1,  # Highest priority
-    'high': 2,
+    # 'critical': 1,  # Highest priority
+    # 'high': 2,
+    'emergency': 1,
+    'urgent': 2,
     'normal': 3     # Lowest priority
 }
 # ============================================
