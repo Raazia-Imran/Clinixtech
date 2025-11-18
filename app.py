@@ -49,8 +49,12 @@ except ImportError:
 
 # ==================== FLASK APP SETUP ====================
 
+# ==================== FLASK APP SETUP ====================
+
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+
+# 🔒 SECURITY: Use environment variables for production
+app.secret_key = os.environ.get('SECRET_KEY', 'supersecretkey')  # Changed this line
 
 # Database setup
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -63,12 +67,33 @@ os.makedirs(PATIENT_UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
-# 🔹 IMPORTANT: Point directly to the edited DB file
-db_path = os.path.join(basedir, 'clinic.db')  # changed from instance_path
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+# 🔒 SECURITY: Use environment variable for database URL
+database_url = os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(basedir, "clinic.db")}')  # Changed this line
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+# app = Flask(__name__)
+# app.secret_key = "supersecretkey"
+
+# # Database setup
+# basedir = os.path.abspath(os.path.dirname(__file__))
+
+# # Upload folder setup
+# UPLOAD_FOLDER = os.path.join(basedir, 'static', 'uploads')
+# PATIENT_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, 'patients')
+# os.makedirs(PATIENT_UPLOAD_FOLDER, exist_ok=True)
+
+# app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+# # 🔹 IMPORTANT: Point directly to the edited DB file
+# db_path = os.path.join(basedir, 'clinic.db')  # changed from instance_path
+# app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# db = SQLAlchemy(app)
 
 
 # ==================== DATABASE MODELS ====================
