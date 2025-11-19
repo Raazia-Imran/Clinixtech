@@ -1382,7 +1382,8 @@ def doctor_patient_history():
     # Get all patients
     patients = Patient.query.all()
     
-    return render_template('doctor_patient_history.html', patients=patients)
+    # return render_template('doctor_patient_history.html', patients=patients)
+    return render_template('patient_medical_history.html', patients=patients)
 
 
 # ============================================
