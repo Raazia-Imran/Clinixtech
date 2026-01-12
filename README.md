@@ -1,6 +1,6 @@
 # ClinixTech: Intelligent Hospital Management System
 
-> **A Next-Generation Healthcare Platform integrating Advanced Data Structures with Modern Web Technologies.**
+> **A Next-Generation Healthcare Platform integrating Advanced Data Structures with Modern Web Technologies.** Clinixtech is LIVE 🎉🎉🎉🎉 https://clinixtech.onrender.com
 
 ## 📋 Overview
 ClinixTech is a comprehensive Hospital Management System designed to bridge the gap between traditional record-keeping and algorithmic efficiency. Unlike standard CRUD applications, ClinixTech leverages **Data Structures and Algorithms (DSA)** to optimize hospital operations—managing emergency triage via Priority Queues, handling prescriptions via Stacks, and analyzing patient vitals with linear regression algorithms.
