@@ -840,6 +840,7 @@ class Admin(db.Model):
     contact = db.Column(db.String(20), nullable=False)
     position = db.Column(db.String(50), nullable=False)
     title = db.Column(db.String(50))
+    department = db.Column(db.String(50))
 
 # NEW MODELS FOR PATIENT PORTAL
 
