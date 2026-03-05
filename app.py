@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
 import heapq
-
+import sqlite3
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -73,6 +73,619 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+def get_db_connection():
+    conn = sqlite3.connect(r"D:\NED\4th Semester\DBMS Project\Clinixtech\clinic.db", timeout=10, check_same_thread=False)  # your DB file name
+    conn.row_factory = sqlite3.Row  # THIS is IMPORTANT
+    return conn
+
+
+
+def admin_required():
+    if 'admin_id'  not in session:
+        return False
+    return True
+
+
+def get_available_slots(doctor_id, appointment_date):
+    day_name = appointment_date.strftime('%A')  # Monday, Tuesday
+
+    # All slots doctor works on that day
+    all_slots = DoctorAvailability.query.filter_by(
+        doctor_id=doctor_id,
+        day_of_week=day_name,
+        is_available=True
+    ).all()
+
+    all_slots = [s.time_slot for s in all_slots]
+
+    # Already booked slots
+    booked = Appointment.query.filter_by(
+        doctor_id=doctor_id,
+        appointment_date=appointment_date
+    ).filter(
+        Appointment.status.in_(['pending','scheduled'])
+    ).all()
+
+    booked_slots = [b.time_slot for b in booked]
+
+    # Remove booked from all
+    free_slots = [s for s in all_slots if s not in booked_slots]
+
+    return free_slots
+
+@app.route("/get_doctor_times/<int:doctor_id>/<date>")
+def get_doctor_times(doctor_id, date):
+    conn = get_db_connection()
+
+    # Get day of the week from date
+    from datetime import datetime
+    day_name = datetime.strptime(date, "%Y-%m-%d").strftime("%A")  # e.g., Monday
+
+    # 1. Get all available slots for this doctor on this day
+    slots = conn.execute("""
+        SELECT time_slot FROM doctor_availability
+        WHERE doctor_id = ? AND day_of_week = ? AND is_available = 1
+    """, (doctor_id, day_name)).fetchall()
+    available_slots = [s["time_slot"] for s in slots]
+
+    # 2. Remove slots that are already booked
+    booked = conn.execute("""
+        SELECT time_slot FROM appointment
+        WHERE doctor_id = ? AND appointment_date = ? AND status IN ('Pending', 'Scheduled')
+    """, (doctor_id, date)).fetchall()
+    booked_slots = [b["time_slot"] for b in booked]
+
+    free_slots = [s for s in available_slots if s not in booked_slots]
+
+    conn.close()
+    return jsonify(free_slots)
+
+@app.route('/admin/dashboard')
+def admin_dashboard():
+    if 'admin_id' not in session:
+        return redirect(url_for('login_admin'))
+    return render_template('admin/AdminDashboard.html')
+
+
+from datetime import datetime, timedelta
+
+def generate_time_slots(start="09:00", end="17:00", interval=60):
+    slots = []
+
+    start_time = datetime.strptime(start, "%H:%M")
+    end_time = datetime.strptime(end, "%H:%M")
+
+    while start_time < end_time:
+        slots.append(start_time.strftime("%I:%M %p"))
+        start_time += timedelta(minutes=interval)
+
+    return slots
+
+@app.route('/admin/appointments')
+def admin_appointments():
+    if 'admin_id'  not in session:
+        return redirect(url_for('login_admin'))
+
+    conn = get_db_connection()
+
+    appointments = conn.execute("""
+    SELECT 
+        appointment.id,
+        appointment.patient_id,        -- ← ADD THIS
+        appointment.doctor_id,         -- ← ADD THIS
+        appointment.reason,  
+        patient.name AS patient_name,
+        patient.age AS patient_age,
+        patient.gender AS patient_gender,
+        doctor.name AS doctor_name,
+        doctor.specialization AS doctor_specialization,
+        appointment.appointment_date,
+        appointment.time_slot,
+        appointment.status,
+        appointment.priority,
+        appointment.completed_at
+    FROM appointment
+    JOIN patient ON appointment.patient_id = patient.id
+    JOIN doctor ON appointment.doctor_id = doctor.id
+    ORDER BY appointment.appointment_date DESC
+""").fetchall()
+   
+    time_slots = generate_time_slots()
+
+    patients = conn.execute("""
+        SELECT id, name FROM patient
+    """).fetchall()
+
+    doctors = conn.execute("""
+        SELECT id, name, specialization FROM doctor
+    """).fetchall()
+
+    conn.close()
+
+    return render_template(
+        'admin/admin_appointments.html',
+        appointments=appointments,
+        patients=patients,
+        doctors=doctors,
+        time_slots=time_slots
+    )
+
+# -------------------------------
+# LOAD APPOINTMENT PAGE
+# -------------------------------
+
+
+
+
+# -------------------------------
+# FETCH PATIENT DETAILS
+# -------------------------------
+@app.route("/get_patient/<int:pid>")
+def get_patient(pid):
+    conn = get_db_connection()
+    patient = conn.execute(
+        "SELECT * FROM patient WHERE id=?",
+        (pid,)
+    ).fetchone()
+    conn.close()
+    return jsonify(dict(patient))
+
+
+# -------------------------------
+# FETCH DOCTOR DETAILS
+# -------------------------------
+@app.route("/get_doctor/<int:did>")
+def get_doctor(did):
+    conn = get_db_connection()
+    doctor = conn.execute(
+        "SELECT * FROM doctor WHERE id=?",
+        (did,)
+    ).fetchone()
+    conn.close()
+    return jsonify(dict(doctor))
+
+
+# -------------------------------
+# INSERT APPOINTMENT
+# -------------------------------
+@app.route("/add_appointment", methods=["POST"])
+def add_appointment():
+
+    patient_id = request.form["patient_id"]
+    doctor_id = request.form["doctor_id"]
+    appointment_date = request.form["appointment_date"]
+    time_slot = request.form["time_slot"]
+    reason = request.form["reason"]
+    priority = request.form.get("priority", "Normal")
+
+    conn = get_db_connection()   # MOVE THIS HERE
+
+    # Check if slot already booked
+    existing = conn.execute("""
+        SELECT * FROM appointment
+        WHERE doctor_id=? AND appointment_date=? AND time_slot=? 
+        AND status IN ('Pending','Scheduled')
+    """,(doctor_id, appointment_date, time_slot)).fetchone()
+
+    if existing:
+        conn.close()
+        flash("This slot is already booked for this doctor", "danger")
+        return redirect(url_for("admin_appointments"))
+
+    # Insert new appointment
+    conn.execute("""
+        INSERT INTO appointment
+        (patient_id, doctor_id, appointment_date, time_slot, reason, priority, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (patient_id, doctor_id, appointment_date, time_slot, reason, priority, "Pending"))
+
+    conn.commit()
+    conn.close()
+
+    flash("Appointment Added Successfully")
+    return redirect(url_for("admin_appointments"))
+
+
+@app.route("/admin/appointments/complete/<int:appointment_id>")
+def complete_appointment_admin(appointment_id):
+    conn = get_db_connection()
+    conn.execute("""
+        UPDATE appointment
+        SET status = 'Completed',
+            completed_at = datetime('now')
+        WHERE id = ?
+    """, (appointment_id,))
+    conn.commit()
+    conn.close()
+    flash("Appointment marked as completed!")
+    return redirect(url_for("admin_appointments"))
+
+@app.route("/admin/appointments/update_status", methods=["POST"])
+def update_appointment_status():
+    appointment_id = request.form["appointment_id"]
+    new_status = request.form["status"]
+
+    conn = get_db_connection()
+    if new_status == "Completed":
+        conn.execute("""
+            UPDATE appointment
+            SET status = ?, completed_at = datetime('now')
+            WHERE id = ?
+        """, (new_status, appointment_id))
+    else:
+        conn.execute("""
+            UPDATE appointment
+            SET status = ?, completed_at = NULL
+            WHERE id = ?
+        """, (new_status, appointment_id))
+    conn.commit()
+    conn.close()
+    flash("Appointment status updated!")
+    return redirect(url_for("admin_appointments"))
+
+@app.route("/admin/appointments/delete/<int:appointment_id>")
+def delete_appointment(appointment_id):
+    conn = get_db_connection()
+    conn.execute("DELETE FROM appointment WHERE id = ?", (appointment_id,))
+    conn.commit()
+    conn.close()
+    flash("Appointment deleted!")
+    return redirect(url_for("admin_appointments"))
+
+@app.route("/admin/appointments/edit/<int:appointment_id>", methods=["POST"])
+def edit_appointment(appointment_id):
+    conn = get_db_connection()
+
+    # In edit mode the selects are disabled, so IDs come from the hidden inputs
+    patient_id       = request.form.get("patient_id_hidden")
+    doctor_id        = request.form.get("doctor_id_hidden")
+    appointment_date = request.form.get("appointment_date")
+    time_slot        = request.form.get("time_slot")
+    priority         = request.form.get("priority")
+    reason           = request.form.get("reason")
+
+    conn.execute("""
+        UPDATE appointment
+        SET patient_id=?, doctor_id=?, appointment_date=?, time_slot=?, priority=?, reason=?
+        WHERE id=?
+    """, (patient_id, doctor_id, appointment_date, time_slot, priority, reason, appointment_id))
+
+    conn.commit()
+    conn.close()
+
+    flash("Appointment Updated Successfully", "success")
+    return redirect(url_for("admin_appointments"))
+
+@app.route("/admin/patients")
+def admin_patients():
+
+    if 'admin_id'  not in session:
+        return redirect(url_for('login_admin'))
+
+    name = request.args.get("name")
+    age = request.args.get("age")
+    date = request.args.get("date")
+    patient_type = request.args.get("patient_type")
+
+    query = "SELECT * FROM patient WHERE 1=1"
+    params = []
+
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
+
+    if age:
+        query += " AND age = ?"
+        params.append(age)
+
+    if date:
+        query += " AND date(created_at) = ?"
+        params.append(date)
+
+    if patient_type:
+        query += " AND patient_type = ?"
+        params.append(patient_type)
+
+    conn = get_db_connection()
+    patients = conn.execute(query, params).fetchall()
+    conn.close()
+
+    return render_template(
+        "admin/admin_patients.html",
+        patients=patients
+    )
+
+
+# -------------------------------
+# ADD PATIENT
+# -------------------------------
+@app.route("/admin/patient/add", methods=["POST"])
+def add_patient():
+    if 'admin_id' not in session:
+        return redirect(url_for('login_admin'))
+
+    name = request.form["name"]
+    age = request.form["age"]
+    gender = request.form["gender"]
+    cnic = request.form["cnic"]
+    email = request.form["email"]
+    contact = request.form["contact"]
+
+    # Walk-in patient
+    password = "pass1234"
+    patient_type = "Walk-in"
+
+    conn = get_db_connection()
+    conn.execute("""
+        INSERT INTO patient
+        (name, age, gender, cnic, email, password, contact, patient_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (name, age, gender, cnic, email, password, contact, patient_type))
+    conn.commit()
+    conn.close()
+
+    flash("Walk-in patient added successfully!")
+    return redirect(url_for("admin_patients"))
+
+
+# -------------------------------
+# EDIT PATIENT
+# -------------------------------
+@app.route("/admin/patient/edit/<int:patient_id>", methods=["POST"])
+def update_patient(patient_id):
+    if 'admin_id'  not in session:
+        return redirect(url_for('login_admin'))
+
+    name = request.form.get("name")
+    age = request.form.get("age")
+    gender = request.form.get("gender")
+    cnic = request.form.get("cnic")
+    email = request.form.get("email")
+    contact = request.form.get("contact")
+
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+                UPDATE patient
+                SET name=?, age=?, gender=?, cnic=?, email=?, contact=?
+                WHERE id=?
+            """, (name, age, gender, cnic, email, contact, patient_id))
+        flash("Patient updated successfully!")
+    except Exception as e:
+        flash(f"Error updating patient: {e}")
+
+    return redirect(url_for("admin_patients"))
+
+
+# -------------------------------
+# DELETE PATIENT
+# -------------------------------
+@app.route("/admin/patient/delete/<int:patient_id>")
+def delete_patient(patient_id):
+
+    if 'admin_id'  not in session:
+        return redirect(url_for('login_admin'))
+
+    conn = get_db_connection()
+
+    # First delete related appointments (important to avoid FK errors)
+    conn.execute("""
+        DELETE FROM appointment
+        WHERE patient_id = ?
+    """, (patient_id,))
+
+    # Then delete patient
+    conn.execute("""
+        DELETE FROM patient
+        WHERE id = ?
+    """, (patient_id,))
+
+    conn.commit()
+    conn.close()
+
+    flash("Patient deleted successfully!")
+
+    return redirect(url_for("admin_patients"))
+
+
+
+# -------------------------------
+# DOCTOR MANAGEMENT
+# -------------------------------
+
+# Function to get DB connection
+def get_db_connection():
+    conn = sqlite3.connect('clinic.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+from datetime import datetime
+
+def is_doctor_available(availability_str):
+    """
+    Determines if a doctor is available now based on their availability string.
+    Example formats:
+    - "Mon-Fri: 9AM-5PM"
+    - "Fri-Mon: 10PM-2AM"  # overnight shift
+    """
+    try:
+        # Split day range and time range
+        day_part, time_part = availability_str.split(":")
+        day_part = day_part.strip()
+        time_part = time_part.strip()
+
+        # Parse day range
+        if "-" in day_part:
+            start_day, end_day = day_part.split("-")
+            start_day = start_day.strip()
+            end_day = end_day.strip()
+        else:
+            start_day = end_day = day_part
+
+        # Map day names to weekday numbers
+        days_map = {"Mon":0, "Tue":1, "Wed":2, "Thu":3, "Fri":4, "Sat":5, "Sun":6}
+        start_day_num = days_map.get(start_day, 0)
+        end_day_num = days_map.get(end_day, 6)
+
+        now = datetime.now()
+        current_day_num = now.weekday()
+        current_time = now.time()
+
+        # Check if today is within day range
+        if start_day_num <= end_day_num:
+            day_ok = start_day_num <= current_day_num <= end_day_num
+        else:  # e.g., Fri-Mon
+            day_ok = current_day_num >= start_day_num or current_day_num <= end_day_num
+
+        # Parse time range
+        start_time_str, end_time_str = [t.strip() for t in time_part.split("-")]
+        start_time = datetime.strptime(start_time_str, "%I%p").time()
+        end_time = datetime.strptime(end_time_str, "%I%p").time()
+
+        # Check if current time is within time range
+        if start_time <= end_time:
+            time_ok = start_time <= current_time <= end_time
+        else:  # overnight shift (crosses midnight)
+            time_ok = current_time >= start_time or current_time <= end_time
+
+        return day_ok and time_ok
+    except Exception as e:
+        print("Availability parse error:", e)
+        return False
+# ------------------- Admin: View Doctors -------------------
+@app.route("/admin/doctors")
+def admin_doctors():
+    name_filter = request.args.get("name", "").strip().lower()
+    specialization_filter = request.args.get("specialization", "").strip().lower()
+    availability_filter = request.args.get("availability", "").strip()  # "Available" or "Not Available"
+
+    conn = get_db_connection()
+    doctors = conn.execute("SELECT * FROM doctor").fetchall()
+
+    doctor_list = []
+    for d in doctors:
+        doc = dict(d)
+        doc['is_available_now'] = is_doctor_available(doc['availability'])
+
+        # Apply filters
+        if name_filter and name_filter not in doc['name'].lower():
+            continue
+        if specialization_filter and specialization_filter not in doc['specialization'].lower():
+            continue
+        if availability_filter:
+            if availability_filter == "Available" and not doc['is_available_now']:
+                continue
+            if availability_filter == "Not Available" and doc['is_available_now']:
+                continue
+
+        doctor_list.append(doc)
+
+    return render_template("admin/admin_doctors.html", doctors=doctor_list)
+
+# ------------------- Admin: Add Doctor -------------------
+
+import sqlite3
+from flask import flash
+
+@app.route("/admin/doctor/add", methods=["POST"])
+def add_doctor():
+    if 'admin_id'  not in session:
+        return redirect(url_for("login"))
+
+    data = request.form
+    default_password = "pass1234"
+
+    conn = get_db_connection()
+
+    try:
+        conn.execute("""
+            INSERT INTO doctor 
+            (name, age, gender, cnic, email, contact, specialization, qualification,
+             experience_years, license_number, current_hospital, availability,
+             consultation_fee, password)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            data['name'],
+            data['age'],
+            data['gender'],
+            data['cnic'],
+            data['email'],
+            data['contact'],
+            data['specialization'],
+            data['qualification'],
+            data['experience_years'],
+            data['license_number'],
+            data['current_hospital'],
+            data['availability'],
+            data['consultation_fee'],
+            default_password
+        ))
+
+        conn.commit()
+        flash("Doctor added successfully!", "success")
+
+    except sqlite3.IntegrityError:
+        flash("Doctor with this CNIC or Email already exists!", "danger")
+
+    finally:
+        conn.close()
+
+    return redirect(url_for("admin_doctors"))
+
+
+# ------------------- Admin: Edit Doctor -------------------
+
+@app.route("/admin/doctor/edit/<int:id>", methods=["POST"])
+def edit_doctor(id):
+    if 'admin_id'  not in session:
+        return redirect(url_for("login"))
+    
+    data = request.form
+    conn = get_db_connection()
+    conn.execute("""
+        UPDATE doctor
+        SET name=?, age=?, gender=?, contact=?, specialization=?, qualification=?,
+            experience_years=?, current_hospital=?, availability=?, consultation_fee=?
+        WHERE id=?
+    """, (
+        data['name'], data['age'], data['gender'], data['contact'], data['specialization'],
+        data['qualification'], data['experience_years'], data['current_hospital'],
+        data['availability'], data['consultation_fee'], id
+    ))
+    conn.commit()
+    conn.close()
+    
+    return redirect(url_for("admin_doctors"))
+
+# ------------------- Admin: Delete Doctor -------------------
+
+@app.route("/admin/doctor/delete/<int:id>", methods=["GET"])
+def delete_doctor(id):
+    if 'admin_id'  not in session:
+        return redirect(url_for("login"))
+    
+    conn = get_db_connection()
+    conn.execute("DELETE FROM doctor WHERE id=?", (id,))
+    conn.commit()
+    conn.close()
+    
+    return redirect(url_for("admin_doctors"))
+
+@app.route('/admin/patients/<int:patient_id>')
+def admin_patient_details(patient_id):
+    return render_template('admin/admin_patient_details.html')
+
+@app.route('/admin/payments')
+def admin_payments():
+    return render_template('admin/admin_payments.html')
+
+@app.route('/admin/rooms')
+def admin_rooms():
+    return render_template('admin/admin_rooms.html')
+
+
+
 
 # app = Flask(__name__)
 # app.secret_key = "supersecretkey"
@@ -182,6 +795,7 @@ class Patient(db.Model):
     profile_picture = db.Column(db.String(200))
     emergency_contact = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    patient_type = db.Column(db.String(20))
     
     # Relationships
     appointments = db.relationship('Appointment', backref='patient', lazy=True, cascade='all, delete-orphan')
@@ -402,31 +1016,56 @@ def signup_doctor():
     return render_template('DoctorSignIn.html')
 
 # Admin Signup (KEEP ORIGINAL)
-@app.route('/signup/admin', methods=['GET', 'POST'])
-def signup_admin():
-    clear_sessions()
-    if request.method == 'POST':
-        try:
-            admin = Admin(
-                name=request.form['name'],
-                age=request.form['age'],
-                gender=request.form['gender'],
-                cnic=request.form['cnic'],
-                email=request.form['email'],
-                password=request.form['password'],
-                contact=request.form['contact'],
-                position=request.form['position'],
-                title=request.form.get('title', '')
-            )
-            db.session.add(admin)
-            db.session.commit()
-            flash("Admin account created successfully!", "success")
-            return redirect(url_for('login_admin'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f"Error creating account: {str(e)}", "error")
-    return render_template('AdminSignIn.html')
+from werkzeug.security import generate_password_hash
 
+@app.route("/admin/signup", methods=["GET", "POST"])
+def signup_admin():
+
+    if request.method == "POST":
+
+        name = request.form["name"]
+        age = request.form["age"]
+        gender = request.form["gender"]
+        cnic = request.form["cnic"]
+        position = request.form["position"]
+        email = request.form["email"]
+        contact = request.form["contact"]
+        title = request.form["title"]
+        department = request.form["department"]
+        password = request.form["password"]
+        confirm_password = request.form["confirm_password"]
+
+        # 🔐 Password match check
+        if password != confirm_password:
+            flash("Passwords do not match", "danger")
+            return redirect(url_for("admin_signup"))
+
+        hashed_password = generate_password_hash(password)
+
+        conn = get_db_connection()
+        try:
+            conn.execute("""
+                INSERT INTO admin
+                (name, age, gender, cnic, email, password, contact, position, title, department)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                name, age, gender, cnic, email,
+                hashed_password,
+                contact, position, title, department
+            ))
+
+            conn.commit()
+            flash("Admin account created successfully", "success")
+            return redirect(url_for("Adminlogin.html"))
+
+        except Exception as e:
+            print("ERROR:", e)   # 👈 This will show real error in terminal
+            flash(str(e), "danger")
+
+        finally:
+            conn.close()
+
+    return render_template("ADMINSIGNIN.html")
 # Patient Login (ENHANCED)
 @app.route('/login/patient', methods=['GET','POST'])
 def login_patient():
@@ -478,27 +1117,35 @@ def login_doctor():
     return render_template('DoctorLogin.html')
 
 # Admin Login (KEEP ORIGINAL)
-@app.route('/login/admin', methods=['GET', 'POST'])
+from werkzeug.security import check_password_hash
+
+@app.route("/admin/login", methods=["GET", "POST"])
 def login_admin():
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        
-        admin = Admin.query.filter_by(email=email, password=password).first()
-        
-        if admin:
-            session.pop('patient', None)
-            session.pop('doctor', None)
-            session['admin'] = admin.name
-            session['admin_id'] = admin.id
-            session['user_type'] = 'admin'
-            
-            flash(f"Welcome, Admin {admin.name}!", "success")
-            return redirect(url_for('dashboard_admin'))
+
+    if request.method == "POST":
+
+        email = request.form["email"]
+        password = request.form["password"]
+
+        conn = get_db_connection()
+        admin = conn.execute(
+            "SELECT * FROM admin WHERE email = ?",
+            (email,)
+        ).fetchone()
+        conn.close()
+
+        if admin and check_password_hash(admin["password"], password):
+
+            session["admin_id"] = admin["id"]
+            session["admin_name"] = admin["name"]
+
+            flash("Login successful", "success")
+            return redirect(url_for("admin_dashboard"))
+
         else:
-            flash("Invalid email or password", "error")
-    
-    return render_template('AdminLogin.html')
+            flash("Invalid email or password", "danger")
+
+    return render_template("AdminLogin.html")
 
 # Old Dashboards (KEEP for backward compatibility)
 @app.route('/dashboard/patient')
@@ -520,11 +1167,6 @@ def dashboard_doctor():
     
     return render_template('DoctorDashboard.html', doctor=doctor)
 
-@app.route('/dashboard/admin')
-def dashboard_admin():
-    if 'admin' not in session:
-        return redirect(url_for('login_admin'))
-    return render_template('AdminDashboard.html')
 
 @app.route('/logout')
 def logout():
@@ -1305,7 +1947,7 @@ def doctor_appointments():
     # Fetch pending/scheduled appointments for this doctor
     appointments = Appointment.query.filter(
         Appointment.doctor_id == doctor.id,
-        Appointment.status.in_(['pending', 'scheduled'])
+        Appointment.status.in_(['pending', 'Scheduled'])
     ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
 
     # Build priority queue
@@ -1742,6 +2384,7 @@ def docbook_appointment():
                             doctor=doctor, 
                             patients=patients,
                             today=datetime.now().strftime('%Y-%m-%d'))
+    
 
 
 # ============================================
@@ -1971,4 +2614,11 @@ if __name__ == '__main__':
 
     # # Run Flask app (only once!)
     # app.run(debug=True)
-
+    
+@app.before_request
+def enable_wal():
+    conn = sqlite3.connect("database.db")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.close()
+if __name__ == "__main__":
+    app.run(debug=True)
