@@ -1036,12 +1036,10 @@ def signup_admin():
         password = request.form["password"]
         confirm_password = request.form["confirm_password"]
 
-        # 🔐 Password match check
+        # Password match check
         if password != confirm_password:
             flash("Passwords do not match", "danger")
-            return redirect(url_for("admin_signup"))
-
-        hashed_password = generate_password_hash(password)
+            return redirect(url_for("signup_admin"))
 
         conn = get_db_connection()
         try:
@@ -1051,22 +1049,23 @@ def signup_admin():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 name, age, gender, cnic, email,
-                hashed_password,
+                password,   # ❌ storing plain password
                 contact, position, title, department
             ))
 
             conn.commit()
             flash("Admin account created successfully", "success")
-            return redirect(url_for("Adminlogin.html"))
+            return redirect(url_for("login_admin"))
 
         except Exception as e:
-            print("ERROR:", e)   # 👈 This will show real error in terminal
+            print("ERROR:", e)
             flash(str(e), "danger")
 
         finally:
             conn.close()
 
     return render_template("ADMINSIGNIN.html")
+
 # Patient Login (ENHANCED)
 @app.route('/login/patient', methods=['GET','POST'])
 def login_patient():
@@ -1135,7 +1134,8 @@ def login_admin():
         ).fetchone()
         conn.close()
 
-        if admin and check_password_hash(admin["password"], password):
+        # Direct comparison
+        if admin and admin["password"] == password:
 
             session["admin_id"] = admin["id"]
             session["admin_name"] = admin["name"]
