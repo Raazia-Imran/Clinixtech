@@ -68,16 +68,15 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 # 🔒 SECURITY: Use environment variable for database URL
-database_url = os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(basedir, "clinic.db")}')  # Changed this line
+database_url = os.environ.get(
+    'DATABASE_URL',
+    r'sqlite:///C:\NED\Clinixtech\clinic.db'
+) # Changed this line
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-def get_db_connection():
-    conn = sqlite3.connect(r"D:\NED\4th Semester\DBMS Project\Clinixtech\clinic.db", timeout=10, check_same_thread=False)  # your DB file name
-    conn.row_factory = sqlite3.Row  # THIS is IMPORTANT
-    return conn
 
 
 
@@ -104,7 +103,7 @@ def get_available_slots(doctor_id, appointment_date):
         doctor_id=doctor_id,
         appointment_date=appointment_date
     ).filter(
-        Appointment.status.in_(['pending','scheduled'])
+        Appointment.status.in_(['pending','Scheduled'])
     ).all()
 
     booked_slots = [b.time_slot for b in booked]
@@ -278,7 +277,7 @@ def add_appointment():
         INSERT INTO appointment
         (patient_id, doctor_id, appointment_date, time_slot, reason, priority, status)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (patient_id, doctor_id, appointment_date, time_slot, reason, priority, "Pending"))
+    """, (patient_id, doctor_id, appointment_date, time_slot, reason, priority, "Scheduled"))
 
     conn.commit()
     conn.close()
@@ -1258,7 +1257,7 @@ def book_appointment():
                 doctor_id=doctor_id,
                 appointment_date=appointment_date,
                 time_slot=time,
-                status='scheduled'
+                status='Scheduled'
             ).first()
             
             if existing:
@@ -1273,7 +1272,7 @@ def book_appointment():
                 time_slot=time,
                 reason=reason,
                 priority=priority,
-                status='scheduled',
+                status='Scheduled',
                 created_at=datetime.utcnow()
             )
             
@@ -1314,8 +1313,8 @@ def view_appointments():
     today = datetime.now().date()
     
     # Separate upcoming and past appointments
-    upcoming = [a for a in all_appointments if a.appointment_date >= today and a.status == 'scheduled']
-    past = [a for a in all_appointments if a.appointment_date < today or a.status in ['completed', 'cancelled']]
+    upcoming = [a for a in all_appointments if a.appointment_date >= today and a.status == 'Scheduled']
+    past = [a for a in all_appointments if a.appointment_date < today or a.status in ['Completed', 'Cancelled']]
     
     return render_template('patient/view-appointments.html',
                          upcoming_appointments=upcoming,
@@ -1333,11 +1332,11 @@ def cancel_appointment(appointment_id):
         ).first_or_404()
         
         # Only allow cancellation of scheduled appointments
-        if appointment.status != 'scheduled':
+        if appointment.status != 'Scheduled':
             flash('Only scheduled appointments can be cancelled.', 'error')
             return redirect(url_for('view_appointments'))
         
-        appointment.status = 'cancelled'
+        appointment.status = 'Cancelled'
         db.session.commit()
         
         flash('Appointment cancelled successfully.', 'success')
@@ -1594,7 +1593,7 @@ def appointments_api():
     
     appointments = Appointment.query.filter_by(
         patient_id=patient_id,
-        status='scheduled'
+        status='Scheduled'
     ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
     
     data = []
@@ -1948,7 +1947,7 @@ def doctor_appointments():
     # Fetch pending/scheduled appointments for this doctor
     appointments = Appointment.query.filter(
         Appointment.doctor_id == doctor.id,
-        Appointment.status.in_(['pending', 'Scheduled'])
+        Appointment.status.in_(['Pending', 'Scheduled'])
     ).order_by(Appointment.appointment_date, Appointment.time_slot).all()
 
     # Build priority queue
@@ -2003,7 +2002,7 @@ def complete_appointment(appointment_id):
         flash("Unauthorized access to this appointment", "danger")
         return redirect(url_for('doctor_appointments'))
 
-    appointment.status = 'completed'
+    appointment.status = 'Completed'
     db.session.commit()
 
     flash("Appointment marked as completed!", "success")
@@ -2345,7 +2344,7 @@ def docbook_appointment():
                 appointment_date=appointment_date,
                 time_slot=time_slot
             ).filter(
-                Appointment.status.in_(['pending', 'scheduled']) # Only check pending/scheduled
+                Appointment.status.in_(['Pending', 'Scheduled']) # Only check pending/scheduled
             ).first()
 
             if existing:
@@ -2360,7 +2359,7 @@ def docbook_appointment():
                 time_slot=time_slot,
                 priority=priority,
                 reason=reason,
-                status='pending' # Set status to 'pending' to ensure it appears in the queue
+                status='Scheduled' # Set status to 'pending' to ensure it appears in the queue
             )
             
             db.session.add(new_appointment)
